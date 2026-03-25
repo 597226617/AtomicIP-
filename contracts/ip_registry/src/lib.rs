@@ -73,10 +73,40 @@ impl IpRegistry {
     }
 
     /// List all IP IDs owned by an address.
-    pub fn list_ip_by_owner(env: Env, owner: Address) -> Vec<u64> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::OwnerIps(owner))
-            .unwrap_or(Vec::new(&env))
+    /// Returns `None` if the address has never committed any IP.
+    pub fn list_ip_by_owner(env: Env, owner: Address) -> Option<Vec<u64>> {
+        env.storage().persistent().get(&DataKey::OwnerIps(owner))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Env};
+
+    #[test]
+    fn unknown_owner_returns_none() {
+        let env = Env::default();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let stranger = Address::generate(&env);
+        assert_eq!(client.list_ip_by_owner(&stranger), None);
+    }
+
+    #[test]
+    fn known_owner_returns_some() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let hash = BytesN::from_array(&env, &[1u8; 32]);
+        let id = client.commit_ip(&owner, &hash);
+
+        let ids = client.list_ip_by_owner(&owner).expect("should be Some");
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids.get(0).unwrap(), id);
     }
 }
