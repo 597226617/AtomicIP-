@@ -62,7 +62,10 @@ impl IpRegistry {
         ids.push_back(id);
         env.storage().persistent().set(&DataKey::OwnerIps(owner), &ids);
 
-        env.storage().instance().set(&DataKey::NextId, &(id + 1));
+        env.storage().persistent().set(&DataKey::NextId, &(id + 1));
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::NextId, TTL_THRESHOLD, TTL_BUMP);
         id
     }
 
