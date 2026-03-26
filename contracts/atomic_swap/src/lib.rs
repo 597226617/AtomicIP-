@@ -45,6 +45,17 @@ pub struct SwapCancelledEvent {
     pub canceller: Address,
 }
 
+// ── Events ────────────────────────────────────────────────────────────────────
+
+/// Payload published when a key is successfully revealed and the swap completes.
+/// Topic: `key_revld` (symbol_short, max 9 chars) — used by off-chain indexers.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyRevealedEvent {
+    pub swap_id: u64,
+    pub decryption_key: BytesN<32>,
+}
+
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -114,8 +125,10 @@ impl AtomicSwap {
         env.storage().persistent().set(&DataKey::Swap(swap_id), &swap);
     }
 
-    /// Seller reveals the decryption key; escrowed payment releases to seller.
-    pub fn reveal_key(env: Env, swap_id: u64, _decryption_key: BytesN<32>) {
+    /// Seller reveals the decryption key; payment releases.
+    /// Emits a `key_revld` event on success so external systems can detect
+    /// when the key becomes available.
+    pub fn reveal_key(env: Env, swap_id: u64, decryption_key: BytesN<32>) {
         let mut swap: SwapRecord = env
             .storage()
             .persistent()
@@ -131,6 +144,12 @@ impl AtomicSwap {
 
         swap.status = SwapStatus::Completed;
         env.storage().persistent().set(&DataKey::Swap(swap_id), &swap);
+
+        // Emit event — only reached after successful state transition.
+        env.events().publish(
+            (symbol_short!("key_revld"),),
+            KeyRevealedEvent { swap_id, decryption_key },
+        );
     }
 
     /// Cancel a swap (invalid key or timeout). Emits a `swap_cancelled` event
@@ -460,6 +479,95 @@ mod tests {
         client.reveal_key(&swap_id, &soroban_sdk::testutils::BytesN::random(&env));
 
         // Swap completed via reveal_key — no cancellation event should exist
+        assert_eq!(env.events().all().len(), 0);
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::{
+        testutils::{Address as _, BytesN as _, Events},
+        vec, Env, IntoVal,
+    };
+
+    fn setup() -> (Env, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, AtomicSwap);
+        (env, contract_id)
+    }
+
+    /// Bring a swap to Accepted state and return its ID + the key used.
+    fn accepted_swap(env: &Env, client: &AtomicSwapClient) -> (u64, BytesN<32>) {
+        let buyer = Address::generate(env);
+        let swap_id = client.initiate_swap(&1u64, &1000_i128, &buyer);
+        client.accept_swap(&swap_id);
+        let key = BytesN::random(env);
+        (swap_id, key)
+    }
+
+    #[test]
+    fn test_reveal_key_emits_event_with_correct_values() {
+        let (env, contract_id) = setup();
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        let (swap_id, key) = accepted_swap(&env, &client);
+
+        client.reveal_key(&swap_id, &key);
+
+        // State must be Completed
+        assert_eq!(client.get_swap(&swap_id).status, SwapStatus::Completed);
+
+        // Exactly one event emitted
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+
+        // Topic is correct
+        let (_, topics, data) = events.get(0).unwrap();
+        assert_eq!(topics, vec![&env, symbol_short!("key_revld").into_val(&env)]);
+
+        // Payload fields match exactly
+        let payload: KeyRevealedEvent = data.into_val(&env);
+        assert_eq!(payload.swap_id, swap_id);
+        assert_eq!(payload.decryption_key, key);
+    }
+
+    #[test]
+    #[should_panic(expected = "swap not accepted")]
+    fn test_reveal_key_on_pending_swap_fails_no_event() {
+        let (env, contract_id) = setup();
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        let buyer = Address::generate(&env);
+        let swap_id = client.initiate_swap(&1u64, &1000_i128, &buyer);
+        let key = BytesN::random(&env);
+
+        // Swap is still Pending — must panic before event fires
+        client.reveal_key(&swap_id, &key);
+    }
+
+    #[test]
+    #[should_panic(expected = "swap not accepted")]
+    fn test_reveal_key_on_completed_swap_fails_no_event() {
+        let (env, contract_id) = setup();
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        let (swap_id, key) = accepted_swap(&env, &client);
+
+        client.reveal_key(&swap_id, &key);
+        // Second call on an already-Completed swap — must panic
+        client.reveal_key(&swap_id, &key);
+    }
+
+    #[test]
+    fn test_no_event_emitted_on_normal_completion_without_reveal() {
+        let (env, contract_id) = setup();
+        let client = AtomicSwapClient::new(&env, &contract_id);
+        let buyer = Address::generate(&env);
+        let swap_id = client.initiate_swap(&1u64, &1000_i128, &buyer);
+        client.accept_swap(&swap_id);
+
+        // No reveal_key called — events list must be empty
         assert_eq!(env.events().all().len(), 0);
     }
 }
