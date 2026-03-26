@@ -34,7 +34,7 @@ pub enum DataKey {
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 #[contracttype]
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum SwapStatus {
     Pending,
     Accepted,
@@ -49,6 +49,7 @@ pub struct SwapRecord {
     pub seller: Address,
     pub buyer: Address,
     pub price: i128,
+    pub token: Address,
     pub status: SwapStatus,
     /// Ledger timestamp after which the buyer may cancel an Accepted swap
     /// if reveal_key has not been called. Set at initiation time.
@@ -98,11 +99,14 @@ impl AtomicSwap {
         };
 
         env.storage().persistent().set(&DataKey::Swap(id), &swap);
-        env.storage().instance().set(&DataKey::NextId, &(id + 1));
+        env.storage().persistent().set(&DataKey::NextId, &(id + 1));
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::NextId, TTL_THRESHOLD, TTL_BUMP);
         id
     }
 
-    /// Buyer accepts the swap and sends payment (payment handled by token contract in full impl).
+    /// Buyer accepts the swap and transfers payment into contract escrow.
     pub fn accept_swap(env: Env, swap_id: u64) {
         let mut swap: SwapRecord = env
             .storage()
@@ -110,12 +114,18 @@ impl AtomicSwap {
             .get(&DataKey::Swap(swap_id))
             .expect("swap not found");
 
+        swap.buyer.require_auth();
         assert!(swap.status == SwapStatus::Pending, "swap not pending");
+        swap.buyer.require_auth();
+
+        token::Client::new(&env, &swap.token)
+            .transfer(&swap.buyer, &env.current_contract_address(), &swap.price);
+
         swap.status = SwapStatus::Accepted;
         env.storage().persistent().set(&DataKey::Swap(swap_id), &swap);
     }
 
-    /// Seller reveals the decryption key; payment releases.
+    /// Seller reveals the decryption key; escrowed payment releases to seller.
     pub fn reveal_key(env: Env, swap_id: u64, _decryption_key: BytesN<32>) {
         let mut swap: SwapRecord = env
             .storage()
@@ -123,8 +133,13 @@ impl AtomicSwap {
             .get(&DataKey::Swap(swap_id))
             .expect("swap not found");
 
+        swap.seller.require_auth();
         assert!(swap.status == SwapStatus::Accepted, "swap not accepted");
-        // Full impl: verify key against IP commitment, then transfer escrowed payment
+        swap.seller.require_auth();
+
+        token::Client::new(&env, &swap.token)
+            .transfer(&env.current_contract_address(), &swap.seller, &swap.price);
+
         swap.status = SwapStatus::Completed;
         env.storage().persistent().set(&DataKey::Swap(swap_id), &swap);
     }
@@ -165,12 +180,46 @@ impl AtomicSwap {
         env.storage().persistent().set(&DataKey::Swap(swap_id), &swap);
     }
 
-    /// Read a swap record.
-    pub fn get_swap(env: Env, swap_id: u64) -> SwapRecord {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Swap(swap_id))
-            .expect("swap not found")
+    /// Read a swap record. Returns None if the swap_id does not exist.
+    pub fn get_swap(env: Env, swap_id: u64) -> Option<SwapRecord> {
+        env.storage().persistent().get(&DataKey::Swap(swap_id))
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::Env;
+
+    #[test]
+    fn get_swap_returns_none_for_nonexistent_id() {
+        let env = Env::default();
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+
+        // No swaps have been created; any ID should return None
+        let result = client.get_swap(&9999);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn get_swap_returns_some_for_existing_swap() {
+        let env = Env::default();
+        let contract_id = env.register(AtomicSwap, ());
+        let client = AtomicSwapClient::new(&env, &contract_id);
+
+        let buyer = Address::generate(&env);
+        let swap_id = client.initiate_swap(&1_u64, &100_i128, &buyer);
+
+        let result = client.get_swap(&swap_id);
+        assert!(result.is_some());
+        let swap = result.unwrap();
+        assert_eq!(swap.ip_id, 1_u64);
+        assert_eq!(swap.price, 100_i128);
+        assert_eq!(swap.status, SwapStatus::Pending);
     }
 }
 
