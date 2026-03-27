@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod tests {
     use ip_registry::{IpRegistry, IpRegistryClient};
-    use soroban_sdk::{testutils::Address as _, BytesN, Env};
+    use soroban_sdk::{testutils::Address as _, Address, BytesN, Env};
 
-    use crate::{AtomicSwap, AtomicSwapClient, DataKey, SwapStatus};
+    use crate::{AtomicSwap, AtomicSwapClient, DataKey};
 
     /// Helper: register IpRegistry, commit an IP owned by `owner`, return (registry_id, ip_id).
     fn setup_registry(env: &Env, owner: &soroban_sdk::Address) -> (soroban_sdk::Address, u64) {
@@ -36,12 +36,12 @@ mod tests {
     #[test]
     fn test_swap_record_creation() {
         let env = Env::default();
-        
+
         let seller = Address::generate(&env);
         let buyer = Address::generate(&env);
         let price = 1000;
         let ip_id = 1;
-        
+
         // Test that we can create SwapRecord struct
         let token = Address::generate(&env);
         let swap = crate::SwapRecord {
@@ -53,7 +53,7 @@ mod tests {
             expiry: 0,
             status: crate::SwapStatus::Pending,
         };
-        
+
         assert_eq!(swap.seller, seller);
         assert_eq!(swap.buyer, buyer);
         assert_eq!(swap.price, price);

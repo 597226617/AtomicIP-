@@ -88,11 +88,7 @@ impl AtomicSwap {
             "active swap already exists for this ip_id"
         );
 
-        let id: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::NextId)
-            .unwrap_or(0);
+        let id: u64 = env.storage().instance().get(&DataKey::NextId).unwrap_or(0);
 
         // Default expiry: 7 days (604800 seconds) from now
         let expiry = env.ledger().timestamp() + 604800u64;
@@ -104,12 +100,16 @@ impl AtomicSwap {
             price,
             token: ip_registry_id, // registry address used as placeholder; real impl passes token separately
             status: SwapStatus::Pending,
-            expiry: env.ledger().timestamp() + 86400,
+            expiry,
         };
 
         env.storage().persistent().set(&DataKey::Swap(id), &swap);
-        env.storage().persistent().extend_ttl(&DataKey::Swap(id), 50000, 50000);
-        env.storage().persistent().set(&DataKey::ActiveSwap(ip_id), &id);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Swap(id), 50000, 50000);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ActiveSwap(ip_id), &id);
         env.storage().instance().set(&DataKey::NextId, &(id + 1));
         id
     }
@@ -130,8 +130,12 @@ impl AtomicSwap {
         //     .transfer(&swap.buyer, &env.current_contract_address(), &swap.price);
 
         swap.status = SwapStatus::Accepted;
-        env.storage().persistent().set(&DataKey::Swap(swap_id), &swap);
-        env.storage().persistent().extend_ttl(&DataKey::Swap(swap_id), 50000, 50000);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Swap(swap_id), &swap);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Swap(swap_id), 50000, 50000);
     }
 
     /// Seller reveals the decryption key; payment releases.
@@ -148,26 +152,47 @@ impl AtomicSwap {
         assert!(swap.status == SwapStatus::Accepted, "swap not accepted");
 
         swap.status = SwapStatus::Completed;
-        env.storage().persistent().set(&DataKey::Swap(swap_id), &swap);
-        env.storage().persistent().extend_ttl(&DataKey::Swap(swap_id), 50000, 50000);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Swap(swap_id), &swap);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Swap(swap_id), 50000, 50000);
         // Release the IP lock so a new swap can be created.
-        env.storage().persistent().remove(&DataKey::ActiveSwap(swap.ip_id));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ActiveSwap(swap.ip_id));
     }
 
-    /// Cancel a pending swap.
-    pub fn cancel_swap(env: Env, swap_id: u64, _canceller: Address) {
+    /// Cancel a pending swap. Only the seller or buyer may cancel.
+    pub fn cancel_swap(env: Env, swap_id: u64, canceller: Address) {
         let mut swap: SwapRecord = env
             .storage()
             .persistent()
             .get(&DataKey::Swap(swap_id))
             .expect("swap not found");
 
-        assert!(swap.status == SwapStatus::Pending, "only pending swaps can be cancelled this way");
+        assert!(
+            canceller == swap.seller || canceller == swap.buyer,
+            "only the seller or buyer can cancel"
+        );
+        canceller.require_auth();
+
+        assert!(
+            swap.status == SwapStatus::Pending,
+            "only pending swaps can be cancelled this way"
+        );
         swap.status = SwapStatus::Cancelled;
-        env.storage().persistent().set(&DataKey::Swap(swap_id), &swap);
-        env.storage().persistent().extend_ttl(&DataKey::Swap(swap_id), 50000, 50000);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Swap(swap_id), &swap);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Swap(swap_id), 50000, 50000);
         // Release the IP lock so a new swap can be created.
-        env.storage().persistent().remove(&DataKey::ActiveSwap(swap.ip_id));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ActiveSwap(swap.ip_id));
     }
 
     /// Buyer cancels an Accepted swap after expiry.
@@ -178,13 +203,26 @@ impl AtomicSwap {
             .get(&DataKey::Swap(swap_id))
             .expect("swap not found");
 
-        assert!(swap.status == SwapStatus::Accepted, "swap not in Accepted state");
-        assert!(caller == swap.buyer, "only the buyer can cancel an expired swap");
-        assert!(env.ledger().timestamp() > swap.expiry, "swap has not expired yet");
+        assert!(
+            swap.status == SwapStatus::Accepted,
+            "swap not in Accepted state"
+        );
+        assert!(
+            caller == swap.buyer,
+            "only the buyer can cancel an expired swap"
+        );
+        assert!(
+            env.ledger().timestamp() > swap.expiry,
+            "swap has not expired yet"
+        );
 
         swap.status = SwapStatus::Cancelled;
-        env.storage().persistent().set(&DataKey::Swap(swap_id), &swap);
-        env.storage().persistent().remove(&DataKey::ActiveSwap(swap.ip_id));
+        env.storage()
+            .persistent()
+            .set(&DataKey::Swap(swap_id), &swap);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ActiveSwap(swap.ip_id));
     }
 
     /// Read a swap record. Returns `None` if the swap_id does not exist.
@@ -290,7 +328,7 @@ mod tests {
         let client = AtomicSwapClient::new(&env, &setup_swap(&env));
         let swap_id = client.initiate_swap(&registry_id, &ip_id, &seller, &100_i128, &buyer);
         client.accept_swap(&swap_id);
-        client.reveal_key(&swap_id, &BytesN::from_array(&env, &[0u8; 32]));
+        client.reveal_key(&swap_id, &seller, &BytesN::from_array(&env, &[0u8; 32]));
 
         let new_id = client.initiate_swap(&registry_id, &ip_id, &seller, &150_i128, &buyer);
         assert_ne!(new_id, swap_id);
