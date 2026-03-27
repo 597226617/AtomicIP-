@@ -6,6 +6,16 @@ use soroban_sdk::{
 #[cfg(test)]
 mod test;
 
+mod test;
+
+// ── Error Codes ────────────────────────────────────────────────────────────
+
+#[repr(u32)]
+pub enum ContractError {
+    IpNotFound = 1,
+    ZeroCommitmentHash = 2,
+}
+
 // ── Storage Keys ────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -55,6 +65,11 @@ impl IpRegistry {
         // Enforced by the Soroban host: panics if the transaction does not carry
         // a valid authorization for `owner`. This is the correct auth pattern.
         owner.require_auth();
+
+        // Reject zero-byte commitment hash (Issue #40)
+        if commitment_hash == BytesN::from_array(&env, &[0u8; 32]) {
+            env.panic_with_error(Error::from_contract_error(ContractError::ZeroCommitmentHash as u32));
+        }
 
         // Reject duplicate commitment hash globally
         assert!(
@@ -109,7 +124,9 @@ impl IpRegistry {
             .storage()
             .persistent()
             .get(&DataKey::IpRecord(ip_id))
-            .expect("IP not found");
+            .unwrap_or_else(|| {
+                env.panic_with_error(Error::from_contract_error(ContractError::IpNotFound as u32))
+            });
 
         record.owner.require_auth();
 
@@ -156,10 +173,13 @@ impl IpRegistry {
         env.storage()
             .persistent()
             .get(&DataKey::IpRecord(ip_id))
-            .unwrap_or_else(|| env.panic_with_error(Error::from_contract_error(1)))
+            .unwrap_or_else(|| {
+                env.panic_with_error(Error::from_contract_error(ContractError::IpNotFound as u32))
+            })
     }
 
-    /// Verify a commitment: recompute sha256(secret || blinding_factor) and compare to stored hash.
+    /// Verify a commitment: hash the secret and blinding factor, then compare to stored commitment hash.
+    /// Implements Pedersen commitment verification: sha256(secret || blinding_factor) == commitment_hash
     pub fn verify_commitment(
         env: Env,
         ip_id: u64,
@@ -170,8 +190,18 @@ impl IpRegistry {
             .storage()
             .persistent()
             .get(&DataKey::IpRecord(ip_id))
-            .unwrap_or_else(|| env.panic_with_error(Error::from_contract_error(1)));
-        record.commitment_hash == secret
+            .unwrap_or_else(|| {
+                env.panic_with_error(Error::from_contract_error(ContractError::IpNotFound as u32))
+            });
+        
+        // Hash the secret and blinding factor using SHA256 (Issue #43: Critical fix)
+        // Proper commitment verification: hash first, then compare
+        let mut preimage = soroban_sdk::Vec::new(&env);
+        preimage.append(secret);
+        preimage.append(blinding_factor);
+        let computed_hash = env.crypto().sha256(&preimage);
+        
+        record.commitment_hash == computed_hash
     }
 
     /// List all IP IDs owned by an address.
