@@ -77,7 +77,10 @@ impl IpRegistry {
             "commitment already registered"
         );
 
-        let id: u64 = env.storage().instance().get(&DataKey::NextId).unwrap_or(0);
+        // NextId lives in persistent storage so it survives contract upgrades.
+        // Instance storage is wiped on upgrade, which would reset the counter
+        // and cause ID collisions with existing IP records.
+        let id: u64 = env.storage().persistent().get(&DataKey::NextId).unwrap_or(0);
 
         let record = IpRecord {
             owner: owner.clone(),
@@ -98,7 +101,8 @@ impl IpRegistry {
         env.storage().persistent().set(&DataKey::OwnerIps(owner.clone()), &ids);
         env.storage().persistent().extend_ttl(&DataKey::OwnerIps(owner.clone()), 50000, 50000);
 
-        env.storage().instance().set(&DataKey::NextId, &(id + 1));
+        env.storage().persistent().set(&DataKey::NextId, &(id + 1));
+        env.storage().persistent().extend_ttl(&DataKey::NextId, 50000, 50000);
 
         env.events().publish(
             (symbol_short!("ip_commit"), owner),
@@ -204,6 +208,31 @@ impl IpRegistry {
 mod tests {
     use super::*;
     use soroban_sdk::{testutils::Address as _, IntoVal, Env};
+
+    /// ID continuity: IP IDs must be monotonically increasing and must not reset
+    /// to 0 after multiple commits (guards against the instance-storage upgrade bug).
+    #[test]
+    fn next_id_is_persistent_and_monotonic() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IpRegistry, ());
+        let client = IpRegistryClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+
+        let id0 = client.commit_ip(&owner, &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]));
+        let id1 = client.commit_ip(&owner, &soroban_sdk::BytesN::from_array(&env, &[2u8; 32]));
+        let id2 = client.commit_ip(&owner, &soroban_sdk::BytesN::from_array(&env, &[3u8; 32]));
+
+        assert_eq!(id0, 0);
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
+
+        // All records must be independently retrievable — no collisions.
+        assert_eq!(client.get_ip(&id0).commitment_hash, soroban_sdk::BytesN::from_array(&env, &[1u8; 32]));
+        assert_eq!(client.get_ip(&id1).commitment_hash, soroban_sdk::BytesN::from_array(&env, &[2u8; 32]));
+        assert_eq!(client.get_ip(&id2).commitment_hash, soroban_sdk::BytesN::from_array(&env, &[3u8; 32]));
+    }
 
     /// Bug Condition Exploration Test — Property 1
     ///

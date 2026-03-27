@@ -107,9 +107,12 @@ impl AtomicSwap {
             "active swap already exists for this ip_id"
         );
 
+        // NextId lives in persistent storage so it survives contract upgrades.
+        // Instance storage is wiped on upgrade, which would reset the counter
+        // and cause ID collisions with existing swap records.
         let id: u64 = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::NextId)
             .unwrap_or(0);
 
@@ -129,7 +132,8 @@ impl AtomicSwap {
         env.storage().persistent().set(&DataKey::Swap(id), &swap);
         env.storage().persistent().extend_ttl(&DataKey::Swap(id), 50000, 50000);
         env.storage().persistent().set(&DataKey::ActiveSwap(ip_id), &id);
-        env.storage().instance().set(&DataKey::NextId, &(id + 1));
+        env.storage().persistent().set(&DataKey::NextId, &(id + 1));
+        env.storage().persistent().extend_ttl(&DataKey::NextId, 50000, 50000);
         id
     }
 
@@ -334,6 +338,42 @@ mod tests {
 
         let new_id = client.initiate_swap(&registry_id, &ip_id, &seller, &150_i128, &buyer);
         assert_ne!(new_id, swap_id);
+    }
+
+    /// ID continuity: swap IDs must be monotonically increasing and must not
+    /// reset to 0 after multiple swaps (simulates upgrade-safe counter behaviour).
+    /// This guards against the instance-storage bug where NextId was wiped on upgrade.
+    #[test]
+    fn next_id_is_persistent_and_monotonic() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let seller = Address::generate(&env);
+        let buyer = Address::generate(&env);
+
+        // Each IP needs a unique commitment hash — use distinct byte arrays.
+        let registry_id = env.register(IpRegistry, ());
+        let registry = IpRegistryClient::new(&env, &registry_id);
+
+        let ip_id_0 = registry.commit_ip(&seller, &BytesN::from_array(&env, &[1u8; 32]));
+        let ip_id_1 = registry.commit_ip(&seller, &BytesN::from_array(&env, &[2u8; 32]));
+        let ip_id_2 = registry.commit_ip(&seller, &BytesN::from_array(&env, &[3u8; 32]));
+
+        let client = AtomicSwapClient::new(&env, &setup_swap(&env));
+
+        let id0 = client.initiate_swap(&registry_id, &ip_id_0, &seller, &100_i128, &buyer);
+        let id1 = client.initiate_swap(&registry_id, &ip_id_1, &seller, &100_i128, &buyer);
+        let id2 = client.initiate_swap(&registry_id, &ip_id_2, &seller, &100_i128, &buyer);
+
+        // IDs must be strictly increasing — no resets, no collisions.
+        assert_eq!(id0, 0);
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
+
+        // All three swap records must be independently retrievable.
+        assert!(client.get_swap(&id0).is_some());
+        assert!(client.get_swap(&id1).is_some());
+        assert!(client.get_swap(&id2).is_some());
     }
 
     /// SECURITY: a non-owner must not be able to initiate a swap for an IP they do not own.
