@@ -7,6 +7,7 @@ use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, 
 #[repr(u32)]
 pub enum ContractError {
     SwapNotFound = 1,
+    InvalidKey = 2,
 }
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
@@ -36,6 +37,7 @@ pub enum SwapStatus {
 #[derive(Clone)]
 pub struct SwapRecord {
     pub ip_id: u64,
+    pub ip_registry_id: Address,
     pub seller: Address,
     pub buyer: Address,
     pub price: i128,
@@ -106,6 +108,7 @@ impl AtomicSwap {
 
         let swap = SwapRecord {
             ip_id,
+            ip_registry_id,
             seller,
             buyer,
             price,
@@ -158,9 +161,16 @@ impl AtomicSwap {
             .extend_ttl(&DataKey::Swap(swap_id), 50000, 50000);
     }
 
-    /// Seller reveals the decryption key; payment releases.
+    /// Seller reveals the decryption key; payment releases only if the key is valid.
     /// SECURITY: caller must be the seller — verified by identity check + require_auth.
-    pub fn reveal_key(env: Env, swap_id: u64, caller: Address, _decryption_key: BytesN<32>) {
+    /// SECURITY: key is verified against the IP commitment before marking Completed.
+    pub fn reveal_key(
+        env: Env,
+        swap_id: u64,
+        caller: Address,
+        secret: BytesN<32>,
+        blinding_factor: BytesN<32>,
+    ) {
         let mut swap: SwapRecord = env
             .storage()
             .persistent()
@@ -175,6 +185,12 @@ impl AtomicSwap {
         caller.require_auth();
         assert!(swap.status == SwapStatus::Accepted, "swap not accepted");
 
+        let registry = IpRegistryClient::new(&env, &swap.ip_registry_id);
+        let valid = registry.verify_commitment(&swap.ip_id, &secret, &blinding_factor);
+        if !valid {
+            env.panic_with_error(Error::from_contract_error(ContractError::InvalidKey as u32));
+        }
+
         swap.status = SwapStatus::Completed;
         env.storage()
             .persistent()
@@ -182,10 +198,14 @@ impl AtomicSwap {
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::Swap(swap_id), 50000, 50000);
-        // Release the IP lock so a new swap can be created.
-        env.storage()
-            .persistent()
-            .remove(&DataKey::ActiveSwap(swap.ip_id));
+
+        env.events().publish(
+            (soroban_sdk::symbol_short!("key_reveal"),),
+            KeyRevealedEvent {
+                swap_id,
+                decryption_key: secret,
+            },
+        );
     }
 
     /// Cancel a pending swap. Only the seller or buyer may cancel.
