@@ -1,6 +1,6 @@
 #![no_std]
 use ip_registry::IpRegistryClient;
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env, Error};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env, Error, Vec};
 
 // ── Error Codes ────────────────────────────────────────────────────────────
 
@@ -32,6 +32,8 @@ pub enum DataKey {
     /// Maps ip_id → swap_id for any swap currently in Pending or Accepted state.
     /// Cleared when a swap reaches Completed or Cancelled.
     ActiveSwap(u64),
+    /// Maps seller address → Vec<u64> of all swap IDs they have initiated.
+    SellerSwaps(Address),
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -174,6 +176,21 @@ impl AtomicSwap {
         env.storage()
             .persistent()
             .set(&DataKey::ActiveSwap(ip_id), &id);
+
+        // Append to seller index
+        let mut seller_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SellerSwaps(swap.seller.clone()))
+            .unwrap_or(Vec::new(&env));
+        seller_ids.push_back(id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::SellerSwaps(swap.seller.clone()), &seller_ids);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::SellerSwaps(swap.seller.clone()), 50000, 50000);
+
         env.storage().instance().set(&DataKey::NextId, &(id + 1));
         id
     }
@@ -447,6 +464,13 @@ impl AtomicSwap {
             &swap.buyer,
             &swap.price,
         );
+    }
+
+    /// List all swap IDs initiated by a seller. Returns `None` if the seller has no swaps.
+    pub fn get_swaps_by_seller(env: Env, seller: Address) -> Option<Vec<u64>> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::SellerSwaps(seller))
     }
 
     /// Read a swap record. Returns `None` if the swap_id does not exist.
@@ -817,6 +841,69 @@ mod tests {
         // After reveal: escrow released to seller.
         assert_eq!(token_client.balance(&swap_contract), 0);
         assert_eq!(token_client.balance(&seller), seller_balance_before + 500);
+    }
+
+    #[test]
+    fn get_swaps_by_seller_returns_none_for_unknown_seller() {
+        let env = Env::default();
+        let client = AtomicSwapClient::new(&env, &setup_swap(&env));
+        let stranger = Address::generate(&env);
+        assert!(client.get_swaps_by_seller(&stranger).is_none());
+    }
+
+    #[test]
+    fn get_swaps_by_seller_tracks_all_initiated_swaps() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let seller = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let admin = Address::generate(&env);
+
+        // Two distinct IPs for the same seller
+        let registry_id = env.register(IpRegistry, ());
+        let registry = IpRegistryClient::new(&env, &registry_id);
+        let ip_id_0 = registry.commit_ip(&seller, &BytesN::from_array(&env, &[10u8; 32]));
+        let ip_id_1 = registry.commit_ip(&seller, &BytesN::from_array(&env, &[11u8; 32]));
+        let token_id = setup_token(&env, &admin, &buyer, 1000);
+
+        let client = AtomicSwapClient::new(&env, &setup_swap(&env));
+        let swap_id_0 = client.initiate_swap(&registry_id, &token_id, &ip_id_0, &seller, &100_i128, &buyer);
+        let swap_id_1 = client.initiate_swap(&registry_id, &token_id, &ip_id_1, &seller, &200_i128, &buyer);
+
+        let ids = client.get_swaps_by_seller(&seller).expect("seller should have swaps");
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids.get(0).unwrap(), swap_id_0);
+        assert_eq!(ids.get(1).unwrap(), swap_id_1);
+    }
+
+    #[test]
+    fn get_swaps_by_seller_does_not_include_other_sellers_swaps() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let seller_a = Address::generate(&env);
+        let seller_b = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let admin = Address::generate(&env);
+
+        let registry_id = env.register(IpRegistry, ());
+        let registry = IpRegistryClient::new(&env, &registry_id);
+        let ip_a = registry.commit_ip(&seller_a, &BytesN::from_array(&env, &[20u8; 32]));
+        let ip_b = registry.commit_ip(&seller_b, &BytesN::from_array(&env, &[21u8; 32]));
+        let token_id = setup_token(&env, &admin, &buyer, 1000);
+
+        let client = AtomicSwapClient::new(&env, &setup_swap(&env));
+        let swap_a = client.initiate_swap(&registry_id, &token_id, &ip_a, &seller_a, &100_i128, &buyer);
+        let swap_b = client.initiate_swap(&registry_id, &token_id, &ip_b, &seller_b, &100_i128, &buyer);
+
+        let a_ids = client.get_swaps_by_seller(&seller_a).unwrap();
+        let b_ids = client.get_swaps_by_seller(&seller_b).unwrap();
+
+        assert_eq!(a_ids.len(), 1);
+        assert_eq!(a_ids.get(0).unwrap(), swap_a);
+        assert_eq!(b_ids.len(), 1);
+        assert_eq!(b_ids.get(0).unwrap(), swap_b);
     }
 }
 
