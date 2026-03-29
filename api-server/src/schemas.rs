@@ -15,6 +15,8 @@ pub struct IpRecord {
     pub owner: String,
     pub commitment_hash: String,
     pub timestamp: u64,
+    /// Whether the IP record has been revoked
+    pub revoked: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
