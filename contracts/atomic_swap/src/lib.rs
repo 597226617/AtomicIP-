@@ -957,6 +957,36 @@ mod tests {
         );
     }
 
+    /// Issue #73: reveal_key with invalid decryption key should not complete swap.
+    #[test]
+    fn reveal_key_invalid_decryption_does_not_complete_swap() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let seller = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (registry_id, ip_id) = setup_registry_with_ip(&env, &seller);
+        let token_id = setup_token(&env, &admin, &buyer, 1000);
+
+        let client = AtomicSwapClient::new(&env, &setup_swap(&env));
+        let swap_id = client.initiate_swap(&registry_id, &token_id, &ip_id, &seller, &100_i128, &buyer);
+        client.accept_swap(&swap_id);
+
+        let wrong_secret = BytesN::from_array(&env, &[9u8; 32]);
+        let wrong_blinding = BytesN::from_array(&env, &[8u8; 32]);
+
+        assert!(
+            client
+                .try_reveal_key(&swap_id, &seller, &wrong_secret, &wrong_blinding)
+                .is_err(),
+            "expected reveal_key to reject invalid secret/blinding"
+        );
+
+        let swap = client.get_swap(&swap_id).expect("swap should exist");
+        assert_eq!(swap.status, SwapStatus::Accepted, "swap should remain Accepted");
+    }
+
     /// SECURITY: a revoked IP must not be swappable.
     #[test]
     fn revoked_ip_cannot_be_swapped() {
