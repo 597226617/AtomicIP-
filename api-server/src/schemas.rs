@@ -86,8 +86,10 @@ pub struct AcceptSwapRequest {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RevealKeyRequest {
     pub caller: String,
-    /// 32-byte decryption key, hex-encoded
-    pub decryption_key: String,
+    /// 32-byte secret, hex-encoded
+    pub secret: String,
+    /// 32-byte blinding factor, hex-encoded
+    pub blinding_factor: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
