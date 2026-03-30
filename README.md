@@ -97,10 +97,17 @@ Follow the step-by-step guide in `demo/demo-script.md`
 
 - [Architecture Overview](docs/architecture.md)
 - [Commitment Scheme](docs/commitment-scheme.md)
+- [Changelog Format](docs/changelog-format.md)
 - [Atomic Swap Flow](docs/atomic-swap.md)
 - [Threat Model & Security](docs/threat-model.md)
 - [Security Policy](SECURITY.md)
 - [Roadmap](docs/roadmap.md)
+
+## 📦 Release Notes and Changelog
+
+- Release notes are generated automatically from commit messages and PR metadata.
+- Push a tag in the format `v*` (for example, `v1.2.0`) to trigger the release workflow.
+- The release workflow uses `git-cliff` with configuration in `cliff.toml`.
 
 ## 🎓 Smart Contract API
 
