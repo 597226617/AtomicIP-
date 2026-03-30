@@ -93,12 +93,19 @@ stellar keys generate deployer --network testnet
 
 Follow the step-by-step guide in `demo/demo-script.md`
 
+## 🌐 Testnet Deployment Status
+
+[![Deploy to Testnet](https://github.com/AtomicIP/AtomicIP-/actions/workflows/deploy-testnet.yml/badge.svg)](https://github.com/AtomicIP/AtomicIP-/actions/workflows/deploy-testnet.yml)
+
+Latest testnet deployment addresses are published in GitHub Actions deployment summaries. Deployments are triggered automatically on release tags (`v*`).
+
 ## 📖 Documentation
 
 - [Architecture Overview](docs/architecture.md)
 - [Commitment Scheme](docs/commitment-scheme.md)
 - [Atomic Swap Flow](docs/atomic-swap.md)
 - [Threat Model & Security](docs/threat-model.md)
+- [Integration Guide for Wallet Providers](docs/integration-guide.md)
 - [Security Policy](SECURITY.md)
 - [Roadmap](docs/roadmap.md)
 
